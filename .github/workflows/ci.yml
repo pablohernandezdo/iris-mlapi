@@ -83,9 +83,7 @@ jobs:
           - 1433:1433
     # DB_URL is set to TEST_DB_URL so migrations and tests hit the test DB.
     env:
-      DB_URL: >-
-        mssql+pyodbc://sa:${{ secrets.TEST_DB_PASSWORD }}@localhost:1433/ml_api_test
-        ?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
+      DB_URL: "mssql+pyodbc://sa:${{ secrets.TEST_DB_PASSWORD }}@localhost:1433/ml_api_test?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
       MODEL_BLOB_URL: placeholder   # never fetched in integration tests
       ENV: ci
       APP_NAME: SampleMLAPI
@@ -147,9 +145,7 @@ jobs:
         ports:
           - 1433:1433
     env:
-      DB_URL: >-
-        mssql+pyodbc://sa:${{ secrets.TEST_DB_PASSWORD }}@localhost:1433/ml_api
-        ?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
+      DB_URL: "mssql+pyodbc://sa:${{ secrets.TEST_DB_PASSWORD }}@localhost:1433/ml_api?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
       MODEL_BLOB_URL: placeholder   # patched out in e2e conftest
       ENV: ci
       APP_NAME: SampleMLAPI
