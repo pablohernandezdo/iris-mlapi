@@ -31,4 +31,4 @@ param sqlAdminLogin = 'sqladmin'
 
 // Your GitHub repo in owner/repo form — creates the OIDC federated credential
 // so GitHub Actions can authenticate without any stored client secrets.
-param githubRepo = 'owner/repo'
+param githubRepo = 'pablohernandezdo/iris-mlapi'
