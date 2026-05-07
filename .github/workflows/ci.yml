@@ -29,6 +29,9 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Install package
+        run: uv sync --all-extras
+
       - name: Run unit tests
         run: uv run pytest src/tests/unit/ -v -p no:cacheprovider
 
