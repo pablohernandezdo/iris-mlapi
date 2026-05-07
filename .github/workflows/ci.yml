@@ -29,11 +29,10 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Install package
-        run: uv sync --all-extras
-
       - name: Run unit tests
         run: uv run pytest src/tests/unit/ -v -p no:cacheprovider
+        env:
+          PYTHONPATH: src
 
   # ── 2. Build & push test image ────────────────────────────────────────────
   # Builds the `test` Docker stage (prod + dev tools + src/tests/) and pushes
