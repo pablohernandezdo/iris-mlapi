@@ -87,9 +87,8 @@ jobs:
           --health-timeout 5s
           --health-retries 10
           --health-start-period 20s
-    # DB_URL is set to TEST_DB_URL so migrations and tests hit the test DB.
+    # DB_URL uses 'sqlserver' — the network alias of the service container.
     env:
-      DB_URL: "mssql+pyodbc://sa:${{ secrets.TEST_DB_PASSWORD }}@localhost:1433/ml_api_test?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
       MODEL_BLOB_URL: placeholder   # never fetched in integration tests
       ENV: ci
       APP_NAME: SampleMLAPI
@@ -105,10 +104,16 @@ jobs:
       - name: Pull test image
         run: docker pull ${{ needs.build.outputs.image }}
 
+      - name: Get service network
+        run: |
+          NETWORK=$(docker inspect ${{ job.services.sqlserver.id }} \
+            --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}')
+          echo "SERVICE_NETWORK=$NETWORK" >> "$GITHUB_ENV"
+
       - name: Run migrations
         run: |
-          docker run --rm --network host \
-            -e DB_URL \
+          docker run --rm --network "$SERVICE_NETWORK" \
+            -e "DB_URL=mssql+pyodbc://sa:${{ secrets.TEST_DB_PASSWORD }}@sqlserver:1433/ml_api_test?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes" \
             -e MODEL_BLOB_URL \
             -e ENV \
             -e APP_NAME \
@@ -117,8 +122,8 @@ jobs:
 
       - name: Run integration tests
         run: |
-          docker run --rm --network host \
-            -e DB_URL \
+          docker run --rm --network "$SERVICE_NETWORK" \
+            -e "DB_URL=mssql+pyodbc://sa:${{ secrets.TEST_DB_PASSWORD }}@sqlserver:1433/ml_api_test?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes" \
             -e MODEL_BLOB_URL \
             -e ENV \
             -e APP_NAME \
@@ -146,7 +151,6 @@ jobs:
           --health-retries 10
           --health-start-period 20s
     env:
-      DB_URL: "mssql+pyodbc://sa:${{ secrets.TEST_DB_PASSWORD }}@localhost:1433/ml_api?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
       MODEL_BLOB_URL: placeholder   # patched out in e2e conftest
       ENV: ci
       APP_NAME: SampleMLAPI
@@ -162,10 +166,16 @@ jobs:
       - name: Pull test image
         run: docker pull ${{ needs.build.outputs.image }}
 
+      - name: Get service network
+        run: |
+          NETWORK=$(docker inspect ${{ job.services.sqlserver.id }} \
+            --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}')
+          echo "SERVICE_NETWORK=$NETWORK" >> "$GITHUB_ENV"
+
       - name: Run migrations
         run: |
-          docker run --rm --network host \
-            -e DB_URL \
+          docker run --rm --network "$SERVICE_NETWORK" \
+            -e "DB_URL=mssql+pyodbc://sa:${{ secrets.TEST_DB_PASSWORD }}@sqlserver:1433/ml_api?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes" \
             -e MODEL_BLOB_URL \
             -e ENV \
             -e APP_NAME \
@@ -174,8 +184,8 @@ jobs:
 
       - name: Run e2e tests
         run: |
-          docker run --rm --network host \
-            -e DB_URL \
+          docker run --rm --network "$SERVICE_NETWORK" \
+            -e "DB_URL=mssql+pyodbc://sa:${{ secrets.TEST_DB_PASSWORD }}@sqlserver:1433/ml_api?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes" \
             -e MODEL_BLOB_URL \
             -e ENV \
             -e APP_NAME \
