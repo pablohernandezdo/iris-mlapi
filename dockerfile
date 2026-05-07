@@ -31,6 +31,10 @@ COPY . .
 # ---- dev stage ----
 FROM base AS dev
 
+# Azure CLI — needed for DefaultAzureCredential (AzureCliCredential) in local dev.
+# Not included in prod or test stages.
+RUN curl -sL https://aka.ms/InstallAzureCLIDeb | bash
+
 # Install package in editable mode
 RUN pip install --no-cache-dir -e .
 

@@ -50,3 +50,8 @@ def setup_logger(level: str = "INFO", env: str = "dev") -> None:
     # Avoid adding duplicate handlers if setup_logger is called more than once.
     root.handlers.clear()
     root.addHandler(handler)
+
+    # The Azure SDK is very chatty at INFO/DEBUG — pin it to WARNING regardless
+    # of the app log level so it only surfaces genuine problems.
+    logging.getLogger("azure").setLevel(logging.WARNING)
+    logging.getLogger("msal").setLevel(logging.WARNING)

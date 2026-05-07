@@ -1,37 +1,35 @@
 import logging
-import os
+from io import BytesIO
 from typing import Annotated
 
 import joblib  # type: ignore
 from fastapi import Depends, Request
 
 from ml_api.api.schemas import InputFeatures, PredictionResult
+from ml_api.ml.exceptions import ModelLoadError
 
 logger = logging.getLogger(__name__)
 
 
 class ModelService:
-    def __init__(self, pipe_path: str):
-        logger.info(f"Loading model pipeline from {pipe_path}")
-
-        if not os.path.exists(pipe_path):
-            logger.error(f"Model pipeline file not found at {pipe_path}")
-            raise FileNotFoundError(f"Model pipeline file not found at {pipe_path}")
-
-        self.pipe = joblib.load(pipe_path)  # type:ignore
+    def __init__(self, model_bytes: bytes):
+        try:
+            self.pipe = joblib.load(BytesIO(model_bytes))
+        except Exception as exc:
+            raise ModelLoadError("Failed to deserialize model pipeline") from exc
 
         if (
             self.pipe is None
             or "model" not in self.pipe
             or "class_names" not in self.pipe
         ):
-            logger.error("Invalid model pipeline structure")
-            raise Exception("Invalid model pipeline structure")
-
-        logger.info("Model pipeline loaded successfully")
+            raise ModelLoadError(
+                "Invalid model pipeline structure: missing 'model' or 'class_names' keys"
+            )
 
         self.model = self.pipe["model"]
         self.class_names = self.pipe["class_names"]
+        logger.info("Model pipeline loaded successfully")
 
     def predict(self, features: InputFeatures) -> PredictionResult:
         input_data = [

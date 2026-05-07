@@ -1,3 +1,6 @@
+# Model artifacts (loaded from Azure Blob at runtime; never baked into images)
+data/
+
 # Python
 __pycache__/
 *.py[oc]

@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
@@ -6,17 +8,35 @@ from sqlalchemy.orm import Session
 from ml_api.core.config import get_settings
 from ml_api.main import app
 
+# Committed fixture model — small sklearn pipeline with the same structure as prod.
+# Kept under src/tests/ so it lands in the test image via `COPY src/tests/ src/tests/`.
+# data/ is in .dockerignore and is never baked into any image.
+_FIXTURE_MODEL_PATH = "src/tests/fixtures/iris_test_pipeline.pkl"
+
+
+def _load_model_from_disk(_blob_url: str) -> bytes:
+    """Test stand-in for _download_model.
+
+    Returns bytes from the committed fixture model instead of hitting Azure
+    Blob Storage.  No Azure credentials are required.
+    """
+    with open(_FIXTURE_MODEL_PATH, "rb") as f:
+        return f.read()
+
 
 @pytest.fixture(scope="session")
 def client():
     """Spin the app up once for the whole session.
 
-    TestClient runs the full ASGI lifespan: the model is loaded from disk
-    and a SQL Server connection pool is opened.  Both are expensive, so we
-    share a single instance across every test in this module.
+    The Azure blob download is patched out so no Azure credentials are needed
+    in the test environment. Everything else (lifespan, DB, model inference)
+    runs for real.
     """
-    with TestClient(app) as c:
-        yield c
+    with patch(
+        "ml_api.core.lifespan._download_model", side_effect=_load_model_from_disk
+    ):
+        with TestClient(app) as c:
+            yield c
 
 
 @pytest.fixture(scope="session")

@@ -22,10 +22,10 @@ logger = logging.getLogger(__name__)
 
 settings = get_settings()
 logger.info(
-    "Settings loaded: env=%s app_name=%s model_path=%s",
+    "Settings loaded: env=%s app_name=%s model_blob_url=%s",
     settings.env,
     settings.app_name,
-    settings.model_path,
+    settings.model_blob_url,
 )
 
 app = FastAPI(lifespan=lifespan)

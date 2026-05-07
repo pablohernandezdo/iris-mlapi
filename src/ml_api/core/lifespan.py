@@ -1,28 +1,45 @@
 import logging
 from contextlib import asynccontextmanager
 
+from azure.identity import DefaultAzureCredential
+from azure.storage.blob import BlobClient
 from fastapi import FastAPI
 from sqlalchemy import make_url, text
 
 from ml_api.core.config import get_settings
 from ml_api.db.database import SQLServerDatabaseService
+from ml_api.ml.exceptions import ModelLoadError
 from ml_api.ml.model_service import ModelService
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
+def _download_model(blob_url: str) -> bytes:
+    """Download the model blob using DefaultAzureCredential.
+
+    Locally: resolves to the AzureCliCredential (az login).
+    In production: resolves to the ManagedIdentityCredential.
+    """
+    logger.info("Downloading model from blob: %s", blob_url)
+    credential = DefaultAzureCredential()
+    blob_client = BlobClient.from_blob_url(blob_url, credential=credential)
+    try:
+        model_bytes: bytes = blob_client.download_blob().readall()
+    except Exception as exc:
+        raise ModelLoadError(f"Failed to download model blob: {exc}") from exc
+    logger.info("Model blob downloaded successfully (%d bytes)", len(model_bytes))
+    return model_bytes
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    model_path = settings.model_path  # use the real path from settings
     try:
-        logger.info("Loading model at startup: model_path=%s", model_path)
-        app.state.model_service = ModelService(model_path)
-        logger.info("Model loaded successfully")
-    except Exception as exc:
+        model_bytes = _download_model(settings.model_blob_url)
+        app.state.model_service = ModelService(model_bytes)
+    except ModelLoadError:
         logger.critical("Startup failed: model could not be loaded", exc_info=True)
-        # Wrap unknown errors as domain error if needed
-        raise exc
+        raise
 
     try:
         db_url = settings.db_url.get_secret_value()

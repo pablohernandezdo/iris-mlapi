@@ -8,3 +8,11 @@ class PredictionError(Exception):
         super().__init__(msg)
         self.msg = msg
         self.features = features
+
+
+class ModelLoadError(Exception):
+    """Raised when the model cannot be downloaded or instantiated at startup."""
+
+    def __init__(self, msg: str) -> None:
+        super().__init__(msg)
+        self.msg = msg

@@ -50,6 +50,17 @@ freeze:
 freeze-dev:
     @uv export --only-group dev -o requirements.dev.txt > /dev/null
 
+# ---------- Infrastructure ----------
+
+# Provision Azure infrastructure.
+# Usage: just infra-deploy <sql-admin-password>
+# Example: just infra-deploy 'MyStr0ngP@ssword!'
+infra-deploy sql_admin_password:
+    @SQL_ADMIN_PASSWORD='{{ sql_admin_password }}' az deployment group create \
+        --resource-group rg-mlapi-prod \
+        --template-file infra/main.bicep \
+        --parameters infra/main.bicepparam
+
 # ---------- Logs & Debug ----------
 
 logs:

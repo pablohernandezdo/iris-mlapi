@@ -1,0 +1,260 @@
+name: CI / CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-flight runs for the same ref (e.g. rapid pushes to a PR branch).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  # github.repository is "<owner>/<repo>"; ghcr.io images are lowercase.
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+
+  # ── 1. Unit tests ─────────────────────────────────────────────────────────
+  # Fast — no Docker, no external services.  Run first to fail quickly.
+  test-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Run unit tests
+        run: uv run pytest src/tests/unit/ -v -p no:cacheprovider
+
+  # ── 2. Build & push test image ────────────────────────────────────────────
+  # Builds the `test` Docker stage (prod + dev tools + src/tests/) and pushes
+  # it to ghcr.io so the two test jobs can pull the same image in parallel
+  # without rebuilding.
+  build:
+    needs: test-unit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write        # needed to push to ghcr.io
+    outputs:
+      image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: dockerfile
+          target: test
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          # Reuse layer cache between runs.
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
+
+  # ── 3a. Integration tests ─────────────────────────────────────────────────
+  # Tests the repository + SQL layer (no FastAPI startup, no model loading).
+  test-integration:
+    needs: build
+    runs-on: ubuntu-latest
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: ${{ secrets.TEST_DB_PASSWORD }}
+        ports:
+          - 1433:1433
+    # DB_URL is set to TEST_DB_URL so migrations and tests hit the test DB.
+    env:
+      DB_URL: >-
+        mssql+pyodbc://sa:${{ secrets.TEST_DB_PASSWORD }}@localhost:1433/ml_api_test
+        ?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
+      MODEL_BLOB_URL: placeholder   # never fetched in integration tests
+      ENV: ci
+      APP_NAME: SampleMLAPI
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull test image
+        run: docker pull ${{ needs.build.outputs.image }}
+
+      - name: Wait for SQL Server
+        run: |
+          for i in $(seq 1 30); do
+            docker exec ${{ job.services.sqlserver.id }} \
+              /opt/mssql-tools18/bin/sqlcmd \
+              -S localhost -U sa -P "${{ secrets.TEST_DB_PASSWORD }}" \
+              -Q "SELECT 1" -C -N 2>/dev/null \
+            && echo "SQL Server is ready" && break
+            echo "Waiting for SQL Server... ($i/30)"
+            sleep 5
+          done
+
+      - name: Run migrations
+        run: |
+          docker run --rm --network host \
+            -e DB_URL \
+            -e MODEL_BLOB_URL \
+            -e ENV \
+            -e APP_NAME \
+            ${{ needs.build.outputs.image }} \
+            alembic upgrade head
+
+      - name: Run integration tests
+        run: |
+          docker run --rm --network host \
+            -e DB_URL \
+            -e MODEL_BLOB_URL \
+            -e ENV \
+            -e APP_NAME \
+            ${{ needs.build.outputs.image }} \
+            python -m pytest src/tests/integration/ -v -p no:cacheprovider
+
+  # ── 3b. End-to-end tests ──────────────────────────────────────────────────
+  # Starts the full FastAPI app via TestClient (lifespan runs, DB connects).
+  # _download_model is patched in e2e/conftest.py — no Azure credentials needed.
+  test-e2e:
+    needs: build
+    runs-on: ubuntu-latest
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: ${{ secrets.TEST_DB_PASSWORD }}
+        ports:
+          - 1433:1433
+    env:
+      DB_URL: >-
+        mssql+pyodbc://sa:${{ secrets.TEST_DB_PASSWORD }}@localhost:1433/ml_api
+        ?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
+      MODEL_BLOB_URL: placeholder   # patched out in e2e conftest
+      ENV: ci
+      APP_NAME: SampleMLAPI
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull test image
+        run: docker pull ${{ needs.build.outputs.image }}
+
+      - name: Wait for SQL Server
+        run: |
+          for i in $(seq 1 30); do
+            docker exec ${{ job.services.sqlserver.id }} \
+              /opt/mssql-tools18/bin/sqlcmd \
+              -S localhost -U sa -P "${{ secrets.TEST_DB_PASSWORD }}" \
+              -Q "SELECT 1" -C -N 2>/dev/null \
+            && echo "SQL Server is ready" && break
+            echo "Waiting for SQL Server... ($i/30)"
+            sleep 5
+          done
+
+      - name: Run migrations
+        run: |
+          docker run --rm --network host \
+            -e DB_URL \
+            -e MODEL_BLOB_URL \
+            -e ENV \
+            -e APP_NAME \
+            ${{ needs.build.outputs.image }} \
+            alembic upgrade head
+
+      - name: Run e2e tests
+        run: |
+          docker run --rm --network host \
+            -e DB_URL \
+            -e MODEL_BLOB_URL \
+            -e ENV \
+            -e APP_NAME \
+            ${{ needs.build.outputs.image }} \
+            python -m pytest src/tests/e2e/ -v -p no:cacheprovider
+
+  # ── 4. Deploy ─────────────────────────────────────────────────────────────
+  # Uncomment once Azure infrastructure is provisioned (infra/main.bicep).
+  #
+  # Required GitHub secrets (values come from `az deployment group create` outputs):
+  #   AZURE_CLIENT_ID       — githubActionsClientId output
+  #   AZURE_TENANT_ID       — your Azure AD tenant ID
+  #   AZURE_SUBSCRIPTION_ID — your subscription ID
+  #   ACR_LOGIN_SERVER      — acrLoginServer output  (e.g. acrabc123.azurecr.io)
+  #   CONTAINER_APP_NAME    — containerAppName output
+  #   RESOURCE_GROUP        — the --resource-group used at deploy time
+  #   PROD_DB_URL           — production DB connection string (for Alembic)
+  #                           mssql+pyodbc://sqladmin:<pw>@<server>.database.windows.net/ml_api
+  #                           ?driver=ODBC+Driver+18+for+SQL+Server&Encrypt=yes
+  #
+  # The OIDC federated credential is created automatically by infra/main.bicep
+  # when you set the githubRepo parameter.
+  #
+  # deploy:
+  #   needs: [test-integration, test-e2e]
+  #   runs-on: ubuntu-latest
+  #   if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+  #   permissions:
+  #     id-token: write    # required for OIDC token exchange
+  #     contents: read
+  #   env:
+  #     IMAGE: ${{ secrets.ACR_LOGIN_SERVER }}/ml-api:${{ github.sha }}
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #
+  #     - uses: azure/login@v2
+  #       with:
+  #         client-id: ${{ secrets.AZURE_CLIENT_ID }}
+  #         tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+  #         subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  #
+  #     - name: Build and push production image to ACR
+  #       run: |
+  #         az acr login --name ${{ secrets.ACR_LOGIN_SERVER }}
+  #         docker build --target prod \
+  #           -t $IMAGE \
+  #           -t ${{ secrets.ACR_LOGIN_SERVER }}/ml-api:latest \
+  #           .
+  #         docker push --all-tags ${{ secrets.ACR_LOGIN_SERVER }}/ml-api
+  #
+  #     # Run Alembic migrations against the production database before the new
+  #     # app revision is activated.  The prod image has alembic installed.
+  #     - name: Run migrations
+  #       run: |
+  #         docker run --rm \
+  #           -e DB_URL="${{ secrets.PROD_DB_URL }}" \
+  #           -e MODEL_BLOB_URL=placeholder \
+  #           -e ENV=prod \
+  #           -e APP_NAME=SampleMLAPI \
+  #           $IMAGE \
+  #           alembic upgrade head
+  #
+  #     - name: Deploy to Container Apps
+  #       run: |
+  #         az containerapp update \
+  #           --name ${{ secrets.CONTAINER_APP_NAME }} \
+  #           --resource-group ${{ secrets.RESOURCE_GROUP }} \
+  #           --image $IMAGE
