@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[oc]
+*.egg-info/
+.venv/
+
+# Environment files (contain secrets)
+.env
+.env.*
+
+# Test artifacts
+.pytest_cache/
+.ruff_cache/
+
+# Docker
+docker-compose*.yml
+dockerfile
+
+# Editor / OS
+.git/
+.gitignore
+.vscode/
+*.md

@@ -1,0 +1,16 @@
+# Overlay for integration tests.
+# Use with: docker compose -f docker-compose.yml -f docker-compose.test.yml ...
+#
+# Sets DB_URL to TEST_DB_URL so tests run against a dedicated database
+# (ml_api_test) instead of the dev database.  TEST_DB_URL must be defined
+# in .env or in the host environment (e.g. a CI secret).
+#
+# TEST_DB_URL example (same host/credentials as DB_URL, different database):
+#   mssql+pyodbc://sa:<pass>@sqlserver:1433/ml_api_test?driver=ODBC+Driver+17+for+SQL+Server&TrustServerCertificate=yes
+services:
+  app:
+    environment:
+      - DB_URL=${TEST_DB_URL}
+  migrate:
+    environment:
+      - DB_URL=${TEST_DB_URL}
