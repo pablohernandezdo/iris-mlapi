@@ -73,25 +73,11 @@ jobs:
   test-integration:
     needs: build
     runs-on: ubuntu-latest
-    services:
-      sqlserver:
-        image: mcr.microsoft.com/mssql/server:2022-latest
-        env:
-          ACCEPT_EULA: "Y"
-          MSSQL_SA_PASSWORD: ${{ secrets.TEST_DB_PASSWORD }}
-        ports:
-          - 1433:1433
-        options: >-
-          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$MSSQL_SA_PASSWORD\" -Q 'SELECT 1' -C"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-          --health-start-period 20s
-    # DB_URL uses 'sqlserver' — the network alias of the service container.
     env:
       MODEL_BLOB_URL: placeholder   # never fetched in integration tests
       ENV: ci
       APP_NAME: SampleMLAPI
+      DB_URL: "mssql+pyodbc://sa:${{ secrets.TEST_DB_PASSWORD }}@localhost:1433/ml_api_test?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
     steps:
       - uses: actions/checkout@v4
 
@@ -104,16 +90,28 @@ jobs:
       - name: Pull test image
         run: docker pull ${{ needs.build.outputs.image }}
 
-      - name: Get service network
+      - name: Start SQL Server
         run: |
-          NETWORK=$(docker inspect ${{ job.services.sqlserver.id }} \
-            --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}')
-          echo "SERVICE_NETWORK=$NETWORK" >> "$GITHUB_ENV"
+          docker run -d --name sqlserver --network host \
+            -e ACCEPT_EULA=Y \
+            -e MSSQL_SA_PASSWORD="${{ secrets.TEST_DB_PASSWORD }}" \
+            mcr.microsoft.com/mssql/server:2022-latest
+
+      - name: Wait for SQL Server
+        run: |
+          for i in $(seq 1 30); do
+            docker exec sqlserver \
+              /opt/mssql-tools18/bin/sqlcmd \
+              -S localhost -U sa -P "${{ secrets.TEST_DB_PASSWORD }}" \
+              -Q "SELECT 1" -C 2>/dev/null \
+            && echo "SQL Server ready" && break
+            echo "Waiting... ($i/30)" && sleep 5
+          done
 
       - name: Run migrations
         run: |
-          docker run --rm --network "$SERVICE_NETWORK" \
-            -e "DB_URL=mssql+pyodbc://sa:${{ secrets.TEST_DB_PASSWORD }}@sqlserver:1433/ml_api_test?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes" \
+          docker run --rm --network host \
+            -e DB_URL \
             -e MODEL_BLOB_URL \
             -e ENV \
             -e APP_NAME \
@@ -122,8 +120,8 @@ jobs:
 
       - name: Run integration tests
         run: |
-          docker run --rm --network "$SERVICE_NETWORK" \
-            -e "DB_URL=mssql+pyodbc://sa:${{ secrets.TEST_DB_PASSWORD }}@sqlserver:1433/ml_api_test?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes" \
+          docker run --rm --network host \
+            -e DB_URL \
             -e MODEL_BLOB_URL \
             -e ENV \
             -e APP_NAME \
@@ -136,24 +134,11 @@ jobs:
   test-e2e:
     needs: build
     runs-on: ubuntu-latest
-    services:
-      sqlserver:
-        image: mcr.microsoft.com/mssql/server:2022-latest
-        env:
-          ACCEPT_EULA: "Y"
-          MSSQL_SA_PASSWORD: ${{ secrets.TEST_DB_PASSWORD }}
-        ports:
-          - 1433:1433
-        options: >-
-          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$MSSQL_SA_PASSWORD\" -Q 'SELECT 1' -C"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-          --health-start-period 20s
     env:
       MODEL_BLOB_URL: placeholder   # patched out in e2e conftest
       ENV: ci
       APP_NAME: SampleMLAPI
+      DB_URL: "mssql+pyodbc://sa:${{ secrets.TEST_DB_PASSWORD }}@localhost:1433/ml_api?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
     steps:
       - uses: actions/checkout@v4
 
@@ -166,16 +151,28 @@ jobs:
       - name: Pull test image
         run: docker pull ${{ needs.build.outputs.image }}
 
-      - name: Get service network
+      - name: Start SQL Server
         run: |
-          NETWORK=$(docker inspect ${{ job.services.sqlserver.id }} \
-            --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}')
-          echo "SERVICE_NETWORK=$NETWORK" >> "$GITHUB_ENV"
+          docker run -d --name sqlserver --network host \
+            -e ACCEPT_EULA=Y \
+            -e MSSQL_SA_PASSWORD="${{ secrets.TEST_DB_PASSWORD }}" \
+            mcr.microsoft.com/mssql/server:2022-latest
+
+      - name: Wait for SQL Server
+        run: |
+          for i in $(seq 1 30); do
+            docker exec sqlserver \
+              /opt/mssql-tools18/bin/sqlcmd \
+              -S localhost -U sa -P "${{ secrets.TEST_DB_PASSWORD }}" \
+              -Q "SELECT 1" -C 2>/dev/null \
+            && echo "SQL Server ready" && break
+            echo "Waiting... ($i/30)" && sleep 5
+          done
 
       - name: Run migrations
         run: |
-          docker run --rm --network "$SERVICE_NETWORK" \
-            -e "DB_URL=mssql+pyodbc://sa:${{ secrets.TEST_DB_PASSWORD }}@sqlserver:1433/ml_api?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes" \
+          docker run --rm --network host \
+            -e DB_URL \
             -e MODEL_BLOB_URL \
             -e ENV \
             -e APP_NAME \
@@ -184,8 +181,8 @@ jobs:
 
       - name: Run e2e tests
         run: |
-          docker run --rm --network "$SERVICE_NETWORK" \
-            -e "DB_URL=mssql+pyodbc://sa:${{ secrets.TEST_DB_PASSWORD }}@sqlserver:1433/ml_api?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes" \
+          docker run --rm --network host \
+            -e DB_URL \
             -e MODEL_BLOB_URL \
             -e ENV \
             -e APP_NAME \
