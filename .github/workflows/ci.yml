@@ -13,13 +13,12 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  # github.repository is "<owner>/<repo>"; ghcr.io images are lowercase.
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
 
   # ── 1. Unit tests ─────────────────────────────────────────────────────────
-  # Fast — no Docker, no external services.  Run first to fail quickly.
+  # Fast feedback — no Docker, no external services. Runs first to fail early.
   test-unit:
     runs-on: ubuntu-latest
     steps:
@@ -35,15 +34,14 @@ jobs:
           PYTHONPATH: src
 
   # ── 2. Build & push test image ────────────────────────────────────────────
-  # Builds the `test` Docker stage (prod + dev tools + src/tests/) and pushes
-  # it to ghcr.io so the two test jobs can pull the same image in parallel
-  # without rebuilding.
+  # Builds the `test` Docker stage and pushes it to ghcr.io so the integration
+  # and e2e jobs can pull the exact same image without rebuilding.
   build:
     needs: test-unit
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write        # needed to push to ghcr.io
+      packages: write
     outputs:
       image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
     steps:
@@ -64,43 +62,48 @@ jobs:
           target: test
           push: true
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-          # Reuse layer cache between runs.
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
 
   # ── 3a. Integration tests ─────────────────────────────────────────────────
-  # Tests the repository + SQL layer (no FastAPI startup, no model loading).
+  # Uses all three compose files:
+  #   docker-compose.yml       → base topology (app, migrate, sqlserver, network)
+  #   docker-compose.ci.yml    → CI overrides (test image target, no volumes)
+  #   docker-compose.test.yml  → routes DB_URL → TEST_DB_URL (ml_api_test)
+  #
+  # All docker compose calls in this job share COMPOSE_FILE so every service
+  # lands on the same Compose-managed network and can resolve each other by
+  # service name (e.g. "sqlserver").
   test-integration:
     needs: build
     runs-on: ubuntu-latest
     env:
-      MODEL_BLOB_URL: placeholder   # never fetched in integration tests
+      COMPOSE_FILE: docker-compose.yml:docker-compose.ci.yml:docker-compose.test.yml
+      MODEL_BLOB_URL: placeholder
       ENV: ci
       APP_NAME: SampleMLAPI
-      DB_URL: "mssql+pyodbc://sa:${{ secrets.TEST_DB_PASSWORD }}@localhost:1433/ml_api_test?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
+
     steps:
       - uses: actions/checkout@v4
 
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Pull test image
-        run: docker pull ${{ needs.build.outputs.image }}
+      - name: Create CI env file
+        run: |
+          printf '%s\n' \
+            'DB_PASSWORD=${{ secrets.TEST_DB_PASSWORD }}' \
+            'DB_URL=mssql+pyodbc://sa:${{ secrets.TEST_DB_PASSWORD }}@sqlserver:1433/ml_api?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes' \
+            'TEST_DB_URL=mssql+pyodbc://sa:${{ secrets.TEST_DB_PASSWORD }}@sqlserver:1433/ml_api_test?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes' \
+            'MODEL_BLOB_URL=placeholder' \
+            'ENV=ci' \
+            'APP_NAME=SampleMLAPI' \
+            > .env
 
       - name: Start SQL Server
-        run: |
-          docker run -d --name sqlserver --network host \
-            -e ACCEPT_EULA=Y \
-            -e MSSQL_SA_PASSWORD="${{ secrets.TEST_DB_PASSWORD }}" \
-            mcr.microsoft.com/mssql/server:2022-latest
+        run: docker compose up -d sqlserver
 
       - name: Wait for SQL Server
         run: |
           for i in $(seq 1 30); do
-            docker exec sqlserver \
+            docker compose exec -T sqlserver \
               /opt/mssql-tools18/bin/sqlcmd \
               -S localhost -U sa -P "${{ secrets.TEST_DB_PASSWORD }}" \
               -Q "SELECT 1" -C 2>/dev/null \
@@ -109,59 +112,48 @@ jobs:
           done
 
       - name: Run migrations
-        run: |
-          docker run --rm --network host \
-            -e DB_URL \
-            -e MODEL_BLOB_URL \
-            -e ENV \
-            -e APP_NAME \
-            ${{ needs.build.outputs.image }} \
-            alembic upgrade head
+        run: docker compose run --rm migrate
 
       - name: Run integration tests
-        run: |
-          docker run --rm --network host \
-            -e DB_URL \
-            -e MODEL_BLOB_URL \
-            -e ENV \
-            -e APP_NAME \
-            ${{ needs.build.outputs.image }} \
-            python -m pytest src/tests/integration/ -v -p no:cacheprovider
+        run: docker compose run --rm app python -m pytest src/tests/integration/ -v -p no:cacheprovider
+
+      - name: Tear down
+        if: always()
+        run: docker compose down --volumes --remove-orphans
 
   # ── 3b. End-to-end tests ──────────────────────────────────────────────────
-  # Starts the full FastAPI app via TestClient (lifespan runs, DB connects).
+  # Uses only the base + CI compose files (no docker-compose.test.yml), so the
+  # app hits the normal ml_api database — the same path as production.
   # _download_model is patched in e2e/conftest.py — no Azure credentials needed.
   test-e2e:
     needs: build
     runs-on: ubuntu-latest
     env:
-      MODEL_BLOB_URL: placeholder   # patched out in e2e conftest
+      COMPOSE_FILE: docker-compose.yml:docker-compose.ci.yml
+      MODEL_BLOB_URL: placeholder
       ENV: ci
       APP_NAME: SampleMLAPI
-      DB_URL: "mssql+pyodbc://sa:${{ secrets.TEST_DB_PASSWORD }}@localhost:1433/ml_api?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes"
+
     steps:
       - uses: actions/checkout@v4
 
-      - uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Pull test image
-        run: docker pull ${{ needs.build.outputs.image }}
+      - name: Create CI env file
+        run: |
+          printf '%s\n' \
+            'DB_PASSWORD=${{ secrets.TEST_DB_PASSWORD }}' \
+            'DB_URL=mssql+pyodbc://sa:${{ secrets.TEST_DB_PASSWORD }}@sqlserver:1433/ml_api?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes' \
+            'MODEL_BLOB_URL=placeholder' \
+            'ENV=ci' \
+            'APP_NAME=SampleMLAPI' \
+            > .env
 
       - name: Start SQL Server
-        run: |
-          docker run -d --name sqlserver --network host \
-            -e ACCEPT_EULA=Y \
-            -e MSSQL_SA_PASSWORD="${{ secrets.TEST_DB_PASSWORD }}" \
-            mcr.microsoft.com/mssql/server:2022-latest
+        run: docker compose up -d sqlserver
 
       - name: Wait for SQL Server
         run: |
           for i in $(seq 1 30); do
-            docker exec sqlserver \
+            docker compose exec -T sqlserver \
               /opt/mssql-tools18/bin/sqlcmd \
               -S localhost -U sa -P "${{ secrets.TEST_DB_PASSWORD }}" \
               -Q "SELECT 1" -C 2>/dev/null \
@@ -170,36 +162,29 @@ jobs:
           done
 
       - name: Run migrations
-        run: |
-          docker run --rm --network host \
-            -e DB_URL \
-            -e MODEL_BLOB_URL \
-            -e ENV \
-            -e APP_NAME \
-            ${{ needs.build.outputs.image }} \
-            alembic upgrade head
+        run: docker compose run --rm migrate
 
       - name: Run e2e tests
-        run: |
-          docker run --rm --network host \
-            -e DB_URL \
-            -e MODEL_BLOB_URL \
-            -e ENV \
-            -e APP_NAME \
-            ${{ needs.build.outputs.image }} \
-            python -m pytest src/tests/e2e/ -v -p no:cacheprovider
+        run: docker compose run --rm app python -m pytest src/tests/e2e/ -v -p no:cacheprovider
+
+      - name: Tear down
+        if: always()
+        run: docker compose down --volumes --remove-orphans
 
   # ── 4. Deploy ─────────────────────────────────────────────────────────────
   # Runs on pushes to main only, after both test suites pass.
+  # Builds the prod image, runs migrations against the production DB, then
+  # updates the Container App to the new image revision.
   deploy:
     needs: [test-integration, test-e2e]
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     permissions:
-      id-token: write    # required for OIDC token exchange
+      id-token: write
       contents: read
     env:
       IMAGE: ${{ secrets.ACR_LOGIN_SERVER }}/ml-api:${{ github.sha }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -218,8 +203,8 @@ jobs:
             .
           docker push --all-tags ${{ secrets.ACR_LOGIN_SERVER }}/ml-api
 
-      # Run Alembic migrations against the production database before the new
-      # app revision is activated.  The prod image has alembic installed.
+      # Migrations run before the new revision is activated so the schema is
+      # always ahead of (or equal to) the running app version.
       - name: Run migrations
         run: |
           docker run --rm \
