@@ -3,7 +3,7 @@
 // Parameter values for the ML API infrastructure deployment.
 // Run once (or re-run on infra changes) with:
 //
-//   just infra-deploy 'MyStr0ngP@ssword!'
+//   just infra-deploy 'MyStr0ngPassw0rd'
 //
 // sqlAdminPassword is read from the SQL_ADMIN_PASSWORD environment variable
 // so it never touches source control or the process argument list.

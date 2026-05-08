@@ -54,7 +54,7 @@ freeze-dev:
 
 # Provision Azure infrastructure.
 # Usage: just infra-deploy <sql-admin-password>
-# Example: just infra-deploy 'MyStr0ngP@ssword!'
+# Example: just infra-deploy 'MyStr0ngPassw0rd'
 infra-deploy sql_admin_password:
     @SQL_ADMIN_PASSWORD='{{ sql_admin_password }}' az deployment group create \
         --resource-group rg-mlapi-prod \
