@@ -1,18 +1,16 @@
-# CI overlay — builds and tests against the prod image.
-# Use with: docker compose -f docker-compose.yml -f docker-compose.ci.yml ...
-#
-# Key differences from the base compose file:
-#   - build target is prod (no debugpy, no editable install, no dev tools)
-#   - volumes are cleared so tests run against the baked image, not the host source
-#   - command override drops --reload (not valid in prod image)
 services:
   app:
     build:
+      context: .
+      # Use the test stage (prod + dev tools + src/tests/) instead of dev,
+      # so CI runs against the baked image rather than the mounted source tree.
       target: test
-    volumes: []
+    volumes: []          # Remove local source mount — use what's baked into the image
+    user: ""             # Remove local UID/GID override — irrelevant inside CI containers
 
   migrate:
     build:
-      target: prod
-    volumes: []
-    user: ""
+      context: .
+      target: prod       # Migrations run from the prod image in CI
+    volumes: []          # Remove local source mount
+    user: ""             # Remove local UID/GID override

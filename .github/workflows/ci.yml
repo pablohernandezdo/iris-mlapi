@@ -66,14 +66,15 @@ jobs:
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
 
   # ── 3a. Integration tests ─────────────────────────────────────────────────
-  # Uses all three compose files:
+  # Compose files merged:
   #   docker-compose.yml       → base topology (app, migrate, sqlserver, network)
-  #   docker-compose.ci.yml    → CI overrides (test image target, no volumes)
+  #   docker-compose.ci.yml    → CI overrides (test image target, no volumes/user)
   #   docker-compose.test.yml  → routes DB_URL → TEST_DB_URL (ml_api_test)
   #
-  # All docker compose calls in this job share COMPOSE_FILE so every service
-  # lands on the same Compose-managed network and can resolve each other by
-  # service name (e.g. "sqlserver").
+  # COMPOSE_FILE is set once at the job level so every `docker compose` call
+  # in this job shares the same file set — and therefore the same network.
+  # migrate and app will not start until sqlserver's healthcheck passes,
+  # so no manual wait loop is needed.
   test-integration:
     needs: build
     runs-on: ubuntu-latest
@@ -98,20 +99,13 @@ jobs:
             > .env
 
       - name: Start SQL Server
+        # Only start sqlserver here. migrate and app are started on-demand via
+        # `docker compose run` below. Compose will honour depends_on and block
+        # until the sqlserver healthcheck passes before running either service.
         run: docker compose up -d sqlserver
 
-      - name: Wait for SQL Server
-        run: |
-          for i in $(seq 1 30); do
-            docker compose exec -T sqlserver \
-              /opt/mssql-tools18/bin/sqlcmd \
-              -S localhost -U sa -P "${{ secrets.TEST_DB_PASSWORD }}" \
-              -Q "SELECT 1" -C 2>/dev/null \
-            && echo "SQL Server ready" && break
-            echo "Waiting... ($i/30)" && sleep 5
-          done
-
       - name: Run migrations
+        # Compose blocks this until sqlserver is healthy (depends_on: service_healthy).
         run: docker compose run --rm migrate
 
       - name: Run integration tests
@@ -122,8 +116,8 @@ jobs:
         run: docker compose down --volumes --remove-orphans
 
   # ── 3b. End-to-end tests ──────────────────────────────────────────────────
-  # Uses only the base + CI compose files (no docker-compose.test.yml), so the
-  # app hits the normal ml_api database — the same path as production.
+  # Uses only base + CI files (no docker-compose.test.yml), so the app hits
+  # the normal ml_api database — same path as production.
   # _download_model is patched in e2e/conftest.py — no Azure credentials needed.
   test-e2e:
     needs: build
@@ -150,18 +144,8 @@ jobs:
       - name: Start SQL Server
         run: docker compose up -d sqlserver
 
-      - name: Wait for SQL Server
-        run: |
-          for i in $(seq 1 30); do
-            docker compose exec -T sqlserver \
-              /opt/mssql-tools18/bin/sqlcmd \
-              -S localhost -U sa -P "${{ secrets.TEST_DB_PASSWORD }}" \
-              -Q "SELECT 1" -C 2>/dev/null \
-            && echo "SQL Server ready" && break
-            echo "Waiting... ($i/30)" && sleep 5
-          done
-
       - name: Run migrations
+        # Compose blocks this until sqlserver is healthy (depends_on: service_healthy).
         run: docker compose run --rm migrate
 
       - name: Run e2e tests
@@ -173,8 +157,6 @@ jobs:
 
   # ── 4. Deploy ─────────────────────────────────────────────────────────────
   # Runs on pushes to main only, after both test suites pass.
-  # Builds the prod image, runs migrations against the production DB, then
-  # updates the Container App to the new image revision.
   deploy:
     needs: [test-integration, test-e2e]
     runs-on: ubuntu-latest
@@ -203,8 +185,6 @@ jobs:
             .
           docker push --all-tags ${{ secrets.ACR_LOGIN_SERVER }}/ml-api
 
-      # Migrations run before the new revision is activated so the schema is
-      # always ahead of (or equal to) the running app version.
       - name: Run migrations
         run: |
           docker run --rm \

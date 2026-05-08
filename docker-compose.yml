@@ -1,6 +1,6 @@
 services:
   app:
-    build: 
+    build:
       context: .
       target: dev
     ports:
@@ -34,7 +34,8 @@ services:
       - app-network
 
   sqlserver:
-    image: mcr.microsoft.com/mssql/server:latest
+    # Pin to a specific version to avoid surprise breaking changes from :latest
+    image: mcr.microsoft.com/mssql/server:2022-latest
     environment:
       - ACCEPT_EULA=Y
       - SA_PASSWORD=${DB_PASSWORD}
@@ -47,12 +48,15 @@ services:
     healthcheck:
       test: [
         "CMD-SHELL",
-        "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P ${DB_PASSWORD} -C -Q 'SELECT 1' || exit 1"
+        "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"${DB_PASSWORD}\" -C -Q 'SELECT 1' || exit 1"
       ]
       interval: 10s
       timeout: 5s
       retries: 10
-      start_period: 20s
+      # Give SQL Server time to fully initialize before the first health probe.
+      # Without this, early failures burn through retries before the process is
+      # even ready, and the container is marked unhealthy too soon.
+      start_period: 30s
 
 networks:
   app-network:
