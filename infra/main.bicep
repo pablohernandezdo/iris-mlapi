@@ -327,6 +327,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'APP_NAME', value: 'SampleMLAPI' }
             { name: 'MODEL_BLOB_URL', value: modelBlobUrl }
             { name: 'DB_URL', secretRef: 'db-url' }
+            { name: 'AZURE_CLIENT_ID', value: appIdentity.properties.clientId }
           ]
           resources: {
             cpu: json('0.5')

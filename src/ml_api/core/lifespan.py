@@ -22,7 +22,9 @@ def _download_model(blob_url: str) -> bytes:
     In production: resolves to the ManagedIdentityCredential.
     """
     logger.info("Downloading model from blob: %s", blob_url)
-    credential = DefaultAzureCredential()
+    credential = DefaultAzureCredential(
+        managed_identity_client_id=settings.azure_client_id
+    )
     blob_client = BlobClient.from_blob_url(blob_url, credential=credential)
     try:
         model_bytes: bytes = blob_client.download_blob().readall()
